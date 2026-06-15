@@ -58,4 +58,37 @@ if [ -z "$cold_a_off" ] || [ "$cold_a_off" -lt 12 ]; then
 fi
 
 info_log "hot_x/hot_y/union on line 0; cold tail at +$cold_a_off"
+
+# Scoring mechanism: with a 16-byte line the baseline splits the hot cluster
+# (donor/curr land on line 1, away from hot_x/hot_y on line 0). The reorder
+# must pull them together and the emitted co-access score must reflect that.
+score=$(make_tmpsrc)
+pahole --coaccess="$coaccess" --coaccess_top_pairs=0 -c 16 -C coaccess_test "$obj" > "$score" || test_fail
+
+if ! grep -q "co-access reorder score" "$score"; then
+	error_log "expected a co-access reorder score block"
+	cat "$score"
+	test_fail
+fi
+
+before_loc=$(sed -n 's/.*locality \([0-9.][0-9.]*\)% ->.*/\1/p' "$score" | head -1)
+after_loc=$(sed -n 's/.*-> \([0-9.][0-9.]*\)%.*/\1/p' "$score" | head -1)
+
+if [ -z "$before_loc" ] || [ -z "$after_loc" ]; then
+	error_log "could not parse locality from score block"
+	cat "$score"
+	test_fail
+fi
+
+# after must be a strict improvement and reach full locality (all hot pairs
+# on one 16-byte line).
+improved=$(awk -v b="$before_loc" -v a="$after_loc" \
+	'BEGIN { print (a > b && a >= 99.9) ? "yes" : "no" }')
+if [ "$improved" != "yes" ]; then
+	error_log "locality did not improve as expected ($before_loc% -> $after_loc%)"
+	cat "$score"
+	test_fail
+fi
+
+info_log "co-access locality $before_loc% -> $after_loc% at 16 B lines"
 test_pass
