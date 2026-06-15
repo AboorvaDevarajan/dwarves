@@ -488,3 +488,110 @@ void class__reorganize_coaccess(struct class *cls, const struct cu *cu,
 		fputc('\n', fp);
 	}
 }
+
+static int field_cacheline(struct field_info *fields, int nr,
+			   const char *name, size_t cacheline_bytes)
+{
+	int i = find_field_index(fields, nr, name);
+
+	if (i < 0 || cacheline_bytes == 0)
+		return -1;
+	return (int)(fields[i].member->byte_offset / cacheline_bytes);
+}
+
+void coaccess__score(struct class *cls, const struct cu *cu,
+		     const struct coaccess_profile *prof,
+		     size_t cacheline_bytes, struct coaccess_score *out)
+{
+	struct field_info fields[MAX_FIELDS];
+	int nr;
+	size_t i;
+
+	memset(out, 0, sizeof(*out));
+	if (!prof || prof->nr_edges == 0 || cacheline_bytes == 0)
+		return;
+
+	nr = collect_fields(cls, cu, fields);
+	for (i = 0; i < prof->nr_edges; i++) {
+		const struct coaccess_edge *e = &prof->edges[i];
+		int la = field_cacheline(fields, nr, e->field_a, cacheline_bytes);
+		int lb = field_cacheline(fields, nr, e->field_b, cacheline_bytes);
+
+		if (la < 0 || lb < 0)
+			continue;
+		out->total_edges++;
+		out->total_weight += e->weight;
+		if (la == lb) {
+			out->same_line_edges++;
+			out->same_line_weight += e->weight;
+		}
+	}
+}
+
+static double coaccess__pct(long long a, long long b)
+{
+	return b ? (100.0 * (double)a / (double)b) : 0.0;
+}
+
+void coaccess__fprintf_insights(FILE *fp, struct class *before,
+				struct class *after, const struct cu *cu,
+				const struct coaccess_profile *prof,
+				size_t cacheline_bytes, unsigned top_pairs,
+				int verbose)
+{
+	struct coaccess_score sb, sa;
+	double before_pct, after_pct;
+
+	if (!prof || prof->nr_edges == 0 || cacheline_bytes == 0)
+		return;
+
+	coaccess__score(before, cu, prof, cacheline_bytes, &sb);
+	coaccess__score(after, cu, prof, cacheline_bytes, &sa);
+	if (sa.total_weight == 0)
+		return;
+
+	before_pct = coaccess__pct(sb.same_line_weight, sb.total_weight);
+	after_pct = coaccess__pct(sa.same_line_weight, sa.total_weight);
+
+	fprintf(fp, "/* co-access reorder score (weighted, %zu B lines):\n",
+		cacheline_bytes);
+	fprintf(fp, " *   locality %.1f%% -> %.1f%%  (%+.1f pp)\n",
+		before_pct, after_pct, after_pct - before_pct);
+	fprintf(fp, " *   pairs sharing a line: %d/%d -> %d/%d\n",
+		sb.same_line_edges, sb.total_edges,
+		sa.same_line_edges, sa.total_edges);
+	fprintf(fp, " *   profile edges resolved: %d/%zu */\n",
+		sa.total_edges, prof->nr_edges);
+
+	if (!verbose)
+		return;
+
+	{
+		struct field_info fb[MAX_FIELDS], fa[MAX_FIELDS];
+		int nrb = collect_fields(before, cu, fb);
+		int nra = collect_fields(after, cu, fa);
+		unsigned use_pairs = effective_top_pairs(prof, top_pairs, fa, nra,
+							 cacheline_bytes);
+		size_t i;
+
+		fprintf(fp, "/* co-access per-pair (top %u):\n", use_pairs);
+		for (i = 0; i < prof->nr_edges && i < use_pairs; i++) {
+			const struct coaccess_edge *e = &prof->edges[i];
+			int lb_a = field_cacheline(fb, nrb, e->field_a, cacheline_bytes);
+			int lb_b = field_cacheline(fb, nrb, e->field_b, cacheline_bytes);
+			int la_a = field_cacheline(fa, nra, e->field_a, cacheline_bytes);
+			int la_b = field_cacheline(fa, nra, e->field_b, cacheline_bytes);
+			const char *tag;
+
+			if (la_a < 0 || la_b < 0)
+				tag = "unresolved";
+			else if (la_a == la_b)
+				tag = (lb_a == lb_b && lb_a >= 0) ? "kept" : "co-located";
+			else
+				tag = "split";
+			fprintf(fp, " *   %s + %s  w=%d  %s\n",
+				e->field_a, e->field_b, e->weight, tag);
+		}
+		fputs(" */\n", fp);
+	}
+}

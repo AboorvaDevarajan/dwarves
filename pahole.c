@@ -2092,6 +2092,10 @@ static void do_reorg_coaccess(struct tag *class, struct cu *cu)
 			       "s" : "");
 		printf(" */\n");
 	}
+	coaccess__fprintf_insights(stdout, tag__class(class), clone, cu,
+				   coaccess_prof,
+				   cacheline_size ? cacheline_size : 64,
+				   coaccess_top_pairs, reorg_verbose);
 }
 
 static void do_reorg(struct tag *class, struct cu *cu)

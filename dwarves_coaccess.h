@@ -25,4 +25,24 @@ void class__reorganize_coaccess(struct class *cls, const struct cu *cu,
 				size_t cacheline_bytes, unsigned top_pairs,
 				int verbose, FILE *fp);
 
+/* Weighted co-access locality of a layout: how much of the profile's edge
+   weight has both endpoints on the same cache line. */
+struct coaccess_score {
+	long long total_weight;
+	long long same_line_weight;
+	int total_edges;
+	int same_line_edges;
+};
+
+void coaccess__score(struct class *cls, const struct cu *cu,
+		     const struct coaccess_profile *prof,
+		     size_t cacheline_bytes, struct coaccess_score *out);
+
+/* Print a before/after reorder score + per-pair insights block to fp. */
+void coaccess__fprintf_insights(FILE *fp, struct class *before,
+				struct class *after, const struct cu *cu,
+				const struct coaccess_profile *prof,
+				size_t cacheline_bytes, unsigned top_pairs,
+				int verbose);
+
 #endif /* _DWARVES_COACCESS_H_ */
