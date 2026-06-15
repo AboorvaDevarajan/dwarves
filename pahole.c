@@ -23,6 +23,7 @@
 #include "bpf/libbpf.h"
 
 #include "dwarves_reorganize.h"
+#include "dwarves_coaccess.h"
 #include "dwarves.h"
 #include "dwarves_emit.h"
 #include "dutil.h"
@@ -74,6 +75,9 @@ static uint8_t find_containers;
 static bool find_enumeration_with_enumerator;
 static uint8_t find_pointers_in_structs;
 static int reorganize;
+static const char *coaccess_file;
+static struct coaccess_profile *coaccess_prof;
+static unsigned coaccess_top_pairs = COACCESS_TOP_PAIRS_AUTO;
 static bool show_private_classes;
 static bool defined_in;
 static bool just_unions;
@@ -1153,6 +1157,8 @@ ARGP_PROGRAM_VERSION_HOOK_DEF = dwarves_print_version;
 #define ARG_padding		   348
 #define ARGP_with_embedded_flexible_array 349
 #define ARGP_btf_attributes	   350
+#define ARGP_coaccess		   351
+#define ARGP_coaccess_top_pairs	   352
 
 /* --btf_features=feature1[,feature2,..] allows us to specify
  * a list of requested BTF features or "default" to enable all default
@@ -1490,6 +1496,18 @@ static const struct argp_option pahole__options[] = {
 		.name = "reorganize",
 		.key  = 'R',
 		.doc  = "reorg struct trying to kill holes",
+	},
+	{
+		.name = "coaccess",
+		.key  = ARGP_coaccess,
+		.arg  = "FILE",
+		.doc  = "reorg struct by co-access profile (fieldA fieldB weight lines)",
+	},
+	{
+		.name = "coaccess_top_pairs",
+		.key  = ARGP_coaccess_top_pairs,
+		.arg  = "N",
+		.doc  = "top N affinity pairs feeding --coaccess (0=auto, default)",
 	},
 	{
 		.name = "show_reorg_steps",
@@ -1886,6 +1904,12 @@ static error_t pahole__options_parser(int key, char *arg,
 		  conf.suppress_comments = 1;
 		  conf.suppress_offset_comment = 1;	break;
 	case 'R': reorganize = 1;			break;
+	case ARGP_coaccess:
+		coaccess_file = arg;
+		break;
+	case ARGP_coaccess_top_pairs:
+		coaccess_top_pairs = (unsigned)atoi(arg);
+		break;
 	case 'r': conf.rel_offset = 1;			break;
 	case 'S': show_reorg_steps = 1;			break;
 	case 's': formatter = size_formatter;		break;
@@ -2027,6 +2051,48 @@ static struct argp pahole__argp = {
 	.parser	  = pahole__options_parser,
 	.args_doc = pahole__args_doc,
 };
+
+static void do_reorg_coaccess(struct tag *class, struct cu *cu)
+{
+	int savings;
+	const uint8_t reorg_verbose =
+			show_reorg_steps ? 2 : global_verbose;
+	struct class *clone = class__clone(tag__class(class), NULL, cu);
+
+	if (clone == NULL) {
+		fprintf(stderr, "pahole: out of memory!\n");
+		exit(EXIT_FAILURE);
+	}
+	if (coaccess_prof == NULL) {
+		coaccess_prof = coaccess__load(coaccess_file);
+		if (coaccess_prof == NULL)
+			exit(EXIT_FAILURE);
+	}
+	class__reorganize_coaccess(clone, cu, coaccess_prof,
+				   cacheline_size ? cacheline_size : 64,
+				   coaccess_top_pairs, reorg_verbose, stdout);
+	savings = class__size(tag__class(class)) - class__size(clone);
+	if (reorg_verbose) {
+		putchar('\n');
+		if (show_reorg_steps)
+			puts("/* Final coaccess-reorganized struct: */");
+	}
+	tag__fprintf(class__tag(clone), cu, &conf, stdout);
+	if (savings != 0) {
+		const size_t cacheline_savings =
+		      (tag__nr_cachelines(&conf, class, cu) -
+		       tag__nr_cachelines(&conf, class__tag(clone), cu));
+
+		printf("   /* saved %d byte%s", savings,
+		       savings != 1 ? "s" : "");
+		if (cacheline_savings != 0)
+			printf(" and %zu cacheline%s",
+			       cacheline_savings,
+			       cacheline_savings != 1 ?
+			       "s" : "");
+		printf(" */\n");
+	}
+}
 
 static void do_reorg(struct tag *class, struct cu *cu)
 {
@@ -3349,6 +3415,9 @@ static enum load_steal_kind pahole_stealer(struct cu *cu, struct conf_load *conf
 		if (reorganize) {
 			if (class && tag__is_struct(class))
 				do_reorg(class, cu);
+		} else if (coaccess_file) {
+			if (class && tag__is_struct(class))
+				do_reorg_coaccess(class, cu);
 		} else if (find_containers)
 			print_containers(cu, class_id, 0);
 		else if (find_pointers_in_structs)
