@@ -234,20 +234,40 @@ static unsigned effective_top_pairs(const struct coaccess_profile *prof,
 				    unsigned top_pairs, struct field_info *fields,
 				    int nr, size_t cacheline_bytes)
 {
-	size_t i, limit, scalar_hot = 0;
+	char seen[MAX_FIELDS][128];
+	size_t i, limit;
+	int nr_seen = 0;
 
 	if (top_pairs != COACCESS_TOP_PAIRS_AUTO)
 		return top_pairs;
 
+	/* Expand the window until enough DISTINCT scalar fields are covered.
+	   Counting occurrences would stop early when a few fields repeat across
+	   the strongest edges, leaving co-accessed siblings behind. */
 	limit = prof->nr_edges < AUTO_MAX_EDGES ? prof->nr_edges : AUTO_MAX_EDGES;
 	for (i = 0; i < limit; i++) {
 		const struct coaccess_edge *e = &prof->edges[i];
+		int j;
 
-		if (hot_name_resolves(fields, nr, e->field_a, cacheline_bytes))
-			scalar_hot++;
-		if (hot_name_resolves(fields, nr, e->field_b, cacheline_bytes))
-			scalar_hot++;
-		if (scalar_hot >= AUTO_MIN_SCALAR)
+		for (j = 0; j < 2; j++) {
+			const char *f = j ? e->field_b : e->field_a;
+			int k, dup = 0;
+
+			if (!hot_name_resolves(fields, nr, f, cacheline_bytes))
+				continue;
+			for (k = 0; k < nr_seen; k++) {
+				if (strcmp(seen[k], f) == 0) {
+					dup = 1;
+					break;
+				}
+			}
+			if (dup || nr_seen >= MAX_FIELDS)
+				continue;
+			strncpy(seen[nr_seen], f, sizeof(seen[0]) - 1);
+			seen[nr_seen][sizeof(seen[0]) - 1] = '\0';
+			nr_seen++;
+		}
+		if (nr_seen >= AUTO_MIN_SCALAR)
 			return (unsigned)(i + 1);
 	}
 	return (unsigned)limit;
@@ -294,6 +314,27 @@ static int cluster_bytes(struct field_info *fields, int nr, int cid)
 	for (i = 0; i < nr; i++) {
 		if (fields[i].cluster == cid)
 			sum += fields[i].size;
+	}
+	return sum;
+}
+
+/* Total co-access weight contained entirely within cluster `cid`. Used to put
+   the hottest cluster on line 0 regardless of source declaration order. */
+static long long cluster_weight(struct field_info *fields, int nr,
+				const struct coaccess_profile *prof, int cid)
+{
+	long long sum = 0;
+	size_t ei;
+
+	for (ei = 0; ei < prof->nr_edges; ei++) {
+		const struct coaccess_edge *e = &prof->edges[ei];
+		int ia = find_field_index(fields, nr, e->field_a);
+		int ib = find_field_index(fields, nr, e->field_b);
+
+		if (ia < 0 || ib < 0)
+			continue;
+		if (fields[ia].cluster == cid && fields[ib].cluster == cid)
+			sum += e->weight;
 	}
 	return sum;
 }
@@ -444,6 +485,24 @@ void class__reorganize_coaccess(struct class *cls, const struct cu *cu,
 		if (cluster_seen[c] < 0) {
 			cluster_seen[c] = cluster_count;
 			cluster_order[cluster_count++] = c;
+		}
+	}
+
+	/* Order clusters by total co-access weight so the hottest pair-set lands
+	   on line 0 even if those fields were declared late in the struct. */
+	for (i = 0; i < cluster_count; i++) {
+		int best = i, k;
+
+		for (k = i + 1; k < cluster_count; k++) {
+			if (cluster_weight(fields, nr, prof, cluster_order[k]) >
+			    cluster_weight(fields, nr, prof, cluster_order[best]))
+				best = k;
+		}
+		if (best != i) {
+			int tmp = cluster_order[i];
+
+			cluster_order[i] = cluster_order[best];
+			cluster_order[best] = tmp;
 		}
 	}
 
