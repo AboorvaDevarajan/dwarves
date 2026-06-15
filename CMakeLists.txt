@@ -118,7 +118,7 @@ add_library(dwarves_emit ${dwarves_emit_LIB_SRCS})
 set_target_properties(dwarves_emit PROPERTIES VERSION 1.0.0 SOVERSION 1)
 target_link_libraries(dwarves_emit dwarves)
 
-set(dwarves_reorganize_LIB_SRCS dwarves_reorganize.c)
+set(dwarves_reorganize_LIB_SRCS dwarves_reorganize.c dwarves_coaccess.c)
 add_library(dwarves_reorganize ${dwarves_reorganize_LIB_SRCS})
 set_target_properties(dwarves_reorganize PROPERTIES VERSION 1.0.0 SOVERSION 1)
 target_link_libraries(dwarves_reorganize dwarves)
@@ -168,7 +168,7 @@ install(TARGETS codiff ctracer dtagnames pahole pdwtags
 		${CMAKE_INSTALL_PREFIX}/bin)
 install(TARGETS dwarves LIBRARY DESTINATION ${LIB_INSTALL_DIR} ARCHIVE DESTINATION ${LIB_INSTALL_DIR})
 install(TARGETS dwarves dwarves_emit dwarves_reorganize LIBRARY DESTINATION ${LIB_INSTALL_DIR} ARCHIVE DESTINATION ${LIB_INSTALL_DIR})
-install(FILES dwarves.h dwarves_emit.h dwarves_reorganize.h
+install(FILES dwarves.h dwarves_emit.h dwarves_reorganize.h dwarves_coaccess.h
 	      dutil.h gobuffer.h list.h rbtree.h
 	      btf_encoder.h config.h ctf.h
 	      elfcreator.h elf_symtab.h hash.h libctf.h
